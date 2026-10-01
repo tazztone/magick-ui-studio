@@ -49,6 +49,17 @@ const GRID_PRESETS = [
   { label: '1×3 Column', rows: 3, cols: 1, desc: 'Vertical Carousel' },
 ];
 
+const GRID_MIN = 1;
+const GRID_MAX = 24;
+const OVERLAP_MAX = 128;
+
+/** Clamp typed grid counts to the supported range (stepper buttons already clamp). */
+const clampGridCount = (v: unknown): number => {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return GRID_MIN;
+  return Math.min(GRID_MAX, Math.max(GRID_MIN, n));
+};
+
 export default function App() {
   const [images, setImages] = useState<any[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -168,32 +179,55 @@ export default function App() {
       return;
     }
 
-    const loadedList = await Promise.all(
-      list.map((file: File) => {
-        return new Promise<any>(resolve => {
-          const img = new Image();
-          const src = URL.createObjectURL(file);
-          img.onload = () => {
-            resolve({
-              id: Math.random().toString(36).substring(2, 9),
-              file,
-              name: file.name,
-              baseName: file.name.substring(0, file.name.lastIndexOf('.')) || file.name,
-              src,
-              width: img.naturalWidth || img.width,
-              height: img.naturalHeight || img.height,
-              sizeKb: (file.size / 1024).toFixed(1),
-              imgElement: img
-            });
-          };
-          img.src = src;
-        });
-      })
-    );
+    const loadedList = (
+      await Promise.all(
+        list.map((file: File) => {
+          return new Promise<any>(resolve => {
+            const img = new Image();
+            const src = URL.createObjectURL(file);
+            img.onload = () => {
+              if (!img.naturalWidth || !img.naturalHeight) {
+                URL.revokeObjectURL(src);
+                resolve(null);
+                return;
+              }
+              resolve({
+                id: Math.random().toString(36).substring(2, 9),
+                file,
+                name: file.name,
+                baseName: file.name.substring(0, file.name.lastIndexOf('.')) || file.name,
+                src,
+                width: img.naturalWidth || img.width,
+                height: img.naturalHeight || img.height,
+                sizeKb: (file.size / 1024).toFixed(1),
+                imgElement: img
+              });
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(src);
+              resolve(null);
+            };
+            img.src = src;
+          });
+        })
+      )
+    ).filter(Boolean);
 
-    setImages(prev => [...prev, ...loadedList]);
-    setActiveIndex(images.length); // automatically focus newly loaded file
-    showToast(`Loaded ${loadedList.length} image(s)`);
+    if (loadedList.length === 0) {
+      showToast('Could not load any of those images');
+      return;
+    }
+
+    // Capture the append position functionally: the `images.length` closure
+    // is stale across overlapping async uploads (assignment is idempotent).
+    let focusIdx = 0;
+    setImages(prev => {
+      focusIdx = prev.length;
+      return [...prev, ...loadedList];
+    });
+    setActiveIndex(focusIdx); // automatically focus newly loaded file
+    const skipped = list.length - loadedList.length;
+    showToast(skipped > 0 ? `Loaded ${loadedList.length}, skipped ${skipped}` : `Loaded ${loadedList.length} image(s)`);
   };
 
   const loadDemo = () => {
@@ -205,13 +239,17 @@ export default function App() {
         name: 'sample_target.png',
         baseName: 'sample_target',
         src: dataUrl,
-        width: img.width,
-        height: img.height,
+        width: img.naturalWidth || img.width,
+        height: img.naturalHeight || img.height,
         sizeKb: '14.2',
         imgElement: img
       };
-      setImages(prev => [...prev, demoItem]);
-      setActiveIndex(images.length);
+      let demoIdx = 0;
+      setImages(prev => {
+        demoIdx = prev.length;
+        return [...prev, demoItem];
+      });
+      setActiveIndex(demoIdx);
       showToast('Sample image ready');
     };
     img.src = dataUrl;
@@ -307,6 +345,7 @@ export default function App() {
     canvas.width = isRotated90 ? targetH : targetW;
     canvas.height = isRotated90 ? targetW : targetH;
     const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas; // 2d unavailable: callers fall back to blob-failure toast
 
     let filterStr = '';
     if (grayscale) filterStr += ' grayscale(100%)';
@@ -345,6 +384,7 @@ export default function App() {
     tileCanvas.width = tileW;
     tileCanvas.height = tileH;
     const ctx = tileCanvas.getContext('2d');
+    if (!ctx) { showToast('Could not render tile image'); return; }
 
     ctx.drawImage(baseCanvas, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
     const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
@@ -427,6 +467,7 @@ export default function App() {
               tileCanvas.width = tileW;
               tileCanvas.height = tileH;
               const tCtx = tileCanvas.getContext('2d');
+              if (!tCtx) { count++; continue; }
 
               tCtx.drawImage(rendered, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
               const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
@@ -880,7 +921,7 @@ export default function App() {
                     <div className="text-[10px] uppercase font-bold text-zinc-500 mb-2">Columns (X)</div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => setCols(c => Math.max(1, c - 1))}
+                        onClick={() => setCols(c => Math.max(GRID_MIN, c - 1))}
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Minus size={13} />
@@ -890,11 +931,11 @@ export default function App() {
                         min="1"
                         max="24"
                         value={cols}
-                        onChange={(e) => setCols(Math.max(1, Number(e.target.value)))}
+                        onChange={(e) => setCols(clampGridCount(e.target.value))}
                         className="flex-1 bg-transparent text-center font-mono font-bold text-sm text-zinc-100 focus:outline-none"
                       />
                       <button
-                        onClick={() => setCols(c => Math.min(24, c + 1))}
+                        onClick={() => setCols(c => Math.min(GRID_MAX, c + 1))}
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Plus size={13} />
@@ -907,7 +948,7 @@ export default function App() {
                     <div className="text-[10px] uppercase font-bold text-zinc-500 mb-2">Rows (Y)</div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => setRows(r => Math.max(1, r - 1))}
+                        onClick={() => setRows(r => Math.max(GRID_MIN, r - 1))}
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Minus size={13} />
@@ -917,11 +958,11 @@ export default function App() {
                         min="1"
                         max="24"
                         value={rows}
-                        onChange={(e) => setRows(Math.max(1, Number(e.target.value)))}
+                        onChange={(e) => setRows(clampGridCount(e.target.value))}
                         className="flex-1 bg-transparent text-center font-mono font-bold text-sm text-zinc-100 focus:outline-none"
                       />
                       <button
-                        onClick={() => setRows(r => Math.min(24, r + 1))}
+                        onClick={() => setRows(r => Math.min(GRID_MAX, r + 1))}
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Plus size={13} />
@@ -947,14 +988,14 @@ export default function App() {
                     <input
                       type="range"
                       min="0"
-                      max="128"
+                      max={OVERLAP_MAX}
                       step="1"
                       value={overlapPx}
                       onChange={(e) => setOverlap(Number(e.target.value))}
                       className="flex-1 accent-violet-500 bg-zinc-800 cursor-pointer h-2 rounded-lg"
                     />
                     <button
-                      onClick={() => setOverlap(o => Math.min(512, clampOverlap(o) + 1))}
+                      onClick={() => setOverlap(o => Math.min(OVERLAP_MAX, clampOverlap(o) + 1))}
                       className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       title="More overlap"
                     >
