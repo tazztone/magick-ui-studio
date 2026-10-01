@@ -1,11 +1,11 @@
 import JSZip from 'jszip';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
-  Upload, Grid, Terminal, Download, Copy, Image as ImageIcon, 
-  Scissors, RefreshCw, X, Check, Layers, Eye, EyeOff, 
-  RotateCw, Sliders, Sparkles, ZoomIn, ZoomOut, Maximize2, 
-  ChevronDown, ChevronUp, Plus, Minus, FolderPlus, ArrowRight,
-  HelpCircle, ExternalLink, CheckCircle2
+  Upload, Grid, Terminal, Download, Copy, 
+  Scissors, RefreshCw, X, Check, Eye, EyeOff, 
+  Sliders, Sparkles, ZoomIn, ZoomOut, Maximize2, 
+  ChevronDown, ChevronUp, Plus, Minus, FolderPlus,
+  CheckCircle2
 } from 'lucide-react';
 
 const createSampleSvg = (title = 'TEST PATTERN', subtitle = '1024 × 1024') => {
@@ -43,6 +43,15 @@ const GRID_PRESETS = [
   { label: '1×3 Column', rows: 3, cols: 1, desc: 'Vertical Carousel' },
 ];
 
+// Split `total` px into `n` tiles covering every pixel (tile sizes differ by
+// at most 1px), matching ImageMagick `-crop WxH@` semantics. Returns the
+// pixel offset and size of tile `i` (0-based) along one axis.
+const tileSpan = (total: number, n: number, i: number) => {
+  const off = Math.floor((i * total) / n);
+  const end = Math.floor(((i + 1) * total) / n);
+  return { off, size: end - off };
+};
+
 export default function App() {
   const [images, setImages] = useState<any[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -58,7 +67,6 @@ export default function App() {
 
   // Resize parameters
   const [resizePercent, setResizePercent] = useState(100);
-  const [maintainAspect, setMaintainAspect] = useState(true);
 
   // Transform / adjustments
   const [rotation, setRotation] = useState(0);
@@ -83,6 +91,15 @@ export default function App() {
   const fileInputRef = useRef(null);
 
   const activeImage = images[activeIndex] || null;
+
+  // Actual px size of the selected tile (edge tiles can be ±1px, see tileSpan)
+  const selectedTileSize =
+    selectedTile && activeImage
+      ? {
+          w: tileSpan(activeImage.width, cols, selectedTile.col).size,
+          h: tileSpan(activeImage.height, rows, selectedTile.row).size,
+        }
+      : null;
 
   useEffect(() => {
     setSelectedTile(null);
@@ -259,16 +276,16 @@ export default function App() {
     if (!activeImage) return;
     const ext = outputFormat === 'jpeg' ? 'jpg' : outputFormat;
     const mimeType = `image/${outputFormat}`;
-    const tileW = Math.floor(activeImage.width / cols);
-    const tileH = Math.floor(activeImage.height / rows);
-
     const baseCanvas = renderTransformedCanvas(activeImage.imgElement, activeImage.width, activeImage.height);
+    const { off: tileX, size: tileW } = tileSpan(baseCanvas.width, cols, c);
+    const { off: tileY, size: tileH } = tileSpan(baseCanvas.height, rows, r);
+    if (tileW === 0 || tileH === 0) { showToast('Tile has zero size at this grid'); return; }
     const tileCanvas = document.createElement('canvas');
     tileCanvas.width = tileW;
     tileCanvas.height = tileH;
     const ctx = tileCanvas.getContext('2d');
 
-    ctx.drawImage(baseCanvas, c * tileW, r * tileH, tileW, tileH, 0, 0, tileW, tileH);
+    ctx.drawImage(baseCanvas, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
     const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
     if (!blob) { showToast('Could not render tile image'); return; }
     const tileIdx = r * cols + c;
@@ -299,18 +316,19 @@ export default function App() {
 
         if (activeTab === 'grid') {
           const folder = (images.length > 1 ? zip.folder(item.baseName) : zip) ?? zip;
-          const tileW = Math.floor(rendered.width / cols);
-          const tileH = Math.floor(rendered.height / rows);
           let count = 0;
 
           for (let r = 0; r < rows; r++) {
+            const { off: tileY, size: tileH } = tileSpan(rendered.height, rows, r);
             for (let c = 0; c < cols; c++) {
+              const { off: tileX, size: tileW } = tileSpan(rendered.width, cols, c);
+              if (tileW === 0 || tileH === 0) { count++; continue; }
               const tileCanvas = document.createElement('canvas');
               tileCanvas.width = tileW;
               tileCanvas.height = tileH;
               const tCtx = tileCanvas.getContext('2d');
 
-              tCtx.drawImage(rendered, c * tileW, r * tileH, tileW, tileH, 0, 0, tileW, tileH);
+              tCtx.drawImage(rendered, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
               const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
               if (blob) folder.file(`${item.baseName}_tile_${count}.${ext}`, blob);
               count++;
@@ -586,7 +604,7 @@ export default function App() {
                     Tile #{selectedTile.index} (R{selectedTile.row + 1}, C{selectedTile.col + 1})
                   </div>
                   <div className="text-[11px] font-mono text-violet-400">
-                    {Math.floor(activeImage.width / cols)} × {Math.floor(activeImage.height / rows)} px
+                    {selectedTileSize ? `${selectedTileSize.w} × ${selectedTileSize.h} px` : '—'}
                   </div>
                 </div>
                 <button
