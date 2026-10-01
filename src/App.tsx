@@ -1,10 +1,12 @@
 import JSZip from 'jszip';
 import { rangeIndices, tileRect, tileSpan, toggleSelect } from './lib/tiles';
-import { batchCommand, singleImageCommand, type ShellType } from './lib/imagemagick';
-
-/** Sanitize overlap input to a non-negative integer px value. */
-const clampOverlap = (o: unknown): number =>
-  Number.isFinite(o as number) ? Math.max(0, Math.floor(o as number)) : 0;
+import { type ShellType } from './lib/imagemagick';
+import { clampGridCount, clampOverlap, GRID_MAX, GRID_MIN, OVERLAP_MAX } from './lib/clamp';
+import { createSampleSvg } from './lib/sample';
+import { buildGeneratedCommand, resolveExportDims } from './lib/export-command';
+import { buildPreviewStyle, drawTransformedImage } from './lib/canvas';
+import { batchArchiveName, processedFileName, selectedZipName, tileFileName } from './lib/naming';
+import { createImageRecord, type ImageRecord } from './lib/images';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, Grid, Terminal, Download, Copy, 
@@ -14,33 +16,6 @@ import {
   CheckCircle2
 } from 'lucide-react';
 
-const createSampleSvg = (title = 'TEST PATTERN', subtitle = '1024 × 1024') => {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-    <defs>
-      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#18181b" />
-        <stop offset="50%" stop-color="#09090b" />
-        <stop offset="100%" stop-color="#18181b" />
-      </linearGradient>
-      <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
-        <path d="M 64 0 L 0 0 0 64" fill="none" stroke="#27272a" stroke-width="1.5" />
-      </pattern>
-      <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#8b5cf6" />
-        <stop offset="100%" stop-color="#06b6d4" />
-      </linearGradient>
-    </defs>
-    <rect width="1024" height="1024" fill="url(#bg)" />
-    <rect width="1024" height="1024" fill="url(#grid)" />
-    <circle cx="512" cy="512" r="320" fill="none" stroke="url(#glow)" stroke-width="6" stroke-dasharray="16,8" />
-    <polygon points="512,280 680,680 344,680" fill="#a855f7" opacity="0.25" />
-    <polygon points="512,280 680,680 344,680" fill="none" stroke="#c084fc" stroke-width="3" />
-    <text x="512" y="500" fill="#fafafa" font-size="44" font-family="system-ui, sans-serif" font-weight="800" text-anchor="middle" letter-spacing="6">${title}</text>
-    <text x="512" y="540" fill="#a1a1aa" font-size="18" font-family="monospace" text-anchor="middle" letter-spacing="2">${subtitle}</text>
-  </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-};
-
 const GRID_PRESETS = [
   { label: '3×3 Grid', rows: 3, cols: 3, desc: 'Instagram & Sprites' },
   { label: '3×1 Strip', rows: 1, cols: 3, desc: 'Horizontal Banner' },
@@ -49,19 +24,8 @@ const GRID_PRESETS = [
   { label: '1×3 Column', rows: 3, cols: 1, desc: 'Vertical Carousel' },
 ];
 
-const GRID_MIN = 1;
-const GRID_MAX = 24;
-const OVERLAP_MAX = 128;
-
-/** Clamp typed grid counts to the supported range (stepper buttons already clamp). */
-const clampGridCount = (v: unknown): number => {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n)) return GRID_MIN;
-  return Math.min(GRID_MAX, Math.max(GRID_MIN, n));
-};
-
 export default function App() {
-  const [images, setImages] = useState<any[]>([]);
+  const [images, setImages] = useState<ImageRecord[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
 
   // Logical workflow tabs
@@ -192,15 +156,18 @@ export default function App() {
                 return;
               }
               resolve({
-                id: Math.random().toString(36).substring(2, 9),
+                ...createImageRecord({
+                  id: Math.random().toString(36).substring(2, 9),
+                  name: file.name,
+                  size: file.size,
+                  src,
+                  naturalWidth: img.naturalWidth,
+                  naturalHeight: img.naturalHeight,
+                  width: img.width,
+                  height: img.height,
+                  imgElement: img,
+                }),
                 file,
-                name: file.name,
-                baseName: file.name.substring(0, file.name.lastIndexOf('.')) || file.name,
-                src,
-                width: img.naturalWidth || img.width,
-                height: img.naturalHeight || img.height,
-                sizeKb: (file.size / 1024).toFixed(1),
-                imgElement: img
               });
             };
             img.onerror = () => {
@@ -235,14 +202,17 @@ export default function App() {
     const img = new Image();
     img.onload = () => {
       const demoItem = {
-        id: Math.random().toString(36).substring(2, 9),
-        name: 'sample_target.png',
-        baseName: 'sample_target',
-        src: dataUrl,
-        width: img.naturalWidth || img.width,
-        height: img.naturalHeight || img.height,
-        sizeKb: '14.2',
-        imgElement: img
+        ...createImageRecord({
+          id: Math.random().toString(36).substring(2, 9),
+          name: 'sample_target.png',
+          size: 14.2 * 1024,
+          src: dataUrl,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          width: img.width,
+          height: img.height,
+          imgElement: img,
+        }),
       };
       let demoIdx = 0;
       setImages(prev => {
@@ -268,60 +238,21 @@ export default function App() {
     }
   };
 
-  const generatedCommand = useMemo(() => {
-    if (images.length === 0) return '# Upload images to generate syntax';
-    const ext = outputFormat === 'jpeg' ? 'jpg' : outputFormat;
-    const current = activeImage || images[0];
-
-    let flags = [];
-    if (activeTab === 'resize' && resizePercent !== 100) {
-      flags.push(`-resize ${resizePercent}%`);
-    }
-    if (rotation !== 0) {
-      flags.push(`-rotate ${rotation}`);
-    }
-    if (grayscale) {
-      flags.push(`-colorspace Gray`);
-    }
-    if (invert) {
-      flags.push(`-negate`);
-    }
-    if (outputFormat === 'jpeg' || outputFormat === 'webp') {
-      flags.push(`-quality ${quality}`);
-    }
-    flags.push(`-strip`);
-
-    const flagStr = flags.length > 0 ? ` ${flags.join(' ')}` : '';
-
-    if (images.length === 1) {
-      const rot90 = rotation === 90 || rotation === 270;
-      return singleImageCommand({
-        name: current.name,
-        baseName: current.baseName,
-        ext,
-        flags: flagStr,
-        shell: shellType,
-        mode: activeTab,
-        w: rot90 ? current.height : current.width,
-        h: rot90 ? current.width : current.height,
-        cols,
-        rows,
-        overlap: overlapPx,
-      });
-    }
-
-
-    return batchCommand({
-      count: images.length,
-      ext,
-      flags: flagStr,
-      shell: shellType,
-      cols,
-      rows,
-      overlap: activeTab === 'grid' ? overlapPx : 0,
-      rotation,
-    });
-  }, [images, activeImage, activeTab, cols, rows, overlapPx, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
+  const generatedCommand = useMemo(() => buildGeneratedCommand({
+    images,
+    activeImage,
+    activeTab,
+    cols,
+    rows,
+    overlapPx,
+    resizePercent,
+    rotation,
+    grayscale,
+    invert,
+    outputFormat,
+    quality,
+    shellType,
+  }), [images, activeImage, activeTab, cols, rows, overlapPx, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
 
   const copyCliCode = () => {
     try {
@@ -339,27 +270,12 @@ export default function App() {
     }
   };
 
-  const renderTransformedCanvas = (imgElement, targetW, targetH) => {
-    const canvas = document.createElement('canvas');
-    const isRotated90 = rotation === 90 || rotation === 270;
-    canvas.width = isRotated90 ? targetH : targetW;
-    canvas.height = isRotated90 ? targetW : targetH;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return canvas; // 2d unavailable: callers fall back to blob-failure toast
-
-    let filterStr = '';
-    if (grayscale) filterStr += ' grayscale(100%)';
-    if (invert) filterStr += ' invert(100%)';
-    ctx.filter = filterStr.trim() || 'none';
-
-    ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    if (rotation !== 0) ctx.rotate((rotation * Math.PI) / 180);
-    ctx.drawImage(imgElement, -targetW / 2, -targetH / 2, targetW, targetH);
-    ctx.restore();
-
-    return canvas;
-  };
+  const renderTransformedCanvas = (imgElement, targetW, targetH) =>
+    drawTransformedImage(document.createElement('canvas'), imgElement, targetW, targetH, {
+      rotation,
+      grayscale,
+      invert,
+    });
 
   const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -390,7 +306,7 @@ export default function App() {
     const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
     if (!blob) { showToast('Could not render tile image'); return; }
     const tileIdx = r * cols + c;
-    downloadBlob(blob, `${activeImage.baseName}_tile_${tileIdx}.${ext}`);
+    downloadBlob(blob, tileFileName(activeImage.baseName, tileIdx, ext));
     showToast(`Exported tile #${tileIdx}`);
   };
 
@@ -420,10 +336,10 @@ export default function App() {
         if (!tCtx) continue;
         tCtx.drawImage(baseCanvas, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
         const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
-        if (blob) zip.file(`${activeImage.baseName}_tile_${idx}.${ext}`, blob);
+        if (blob) zip.file(tileFileName(activeImage.baseName, idx, ext), blob);
       }
       const zipBlob = await zip.generateAsync({ type: 'blob' });
-      downloadBlob(zipBlob, `${activeImage.baseName}_selected_${indices.length}.zip`);
+      downloadBlob(zipBlob, selectedZipName(activeImage.baseName, indices.length));
       showToast(`Exported ${indices.length} tiles`);
     } catch (err) {
       console.error(err);
@@ -444,13 +360,7 @@ export default function App() {
 
       for (let i = 0; i < images.length; i++) {
         const item = images[i];
-        let outW = item.width;
-        let outH = item.height;
-
-        if (activeTab === 'resize' && resizePercent !== 100) {
-          outW = Math.round(item.width * (resizePercent / 100));
-          outH = Math.round(item.height * (resizePercent / 100));
-        }
+        const { outW, outH } = resolveExportDims(item, activeTab, resizePercent);
 
         const rendered = renderTransformedCanvas(item.imgElement, outW, outH);
 
@@ -471,18 +381,18 @@ export default function App() {
 
               tCtx.drawImage(rendered, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
               const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
-              if (blob) folder.file(`${item.baseName}_tile_${count}.${ext}`, blob);
+              if (blob) folder.file(tileFileName(item.baseName, count, ext), blob);
               count++;
             }
           }
         } else {
           const blob: Blob | null = await new Promise<Blob | null>(res => rendered.toBlob(res, mimeType, quality / 100));
-          if (blob) zip.file(`${item.baseName}_processed.${ext}`, blob);
+          if (blob) zip.file(processedFileName(item.baseName, ext), blob);
         }
       }
 
       const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const archiveName = images.length > 1 ? 'magick_batch_tiles.zip' : `${images[0].baseName}_tiles.zip`;
+      const archiveName = batchArchiveName(images.length, images[0].baseName);
       downloadBlob(zipBlob, archiveName);
       showToast('Export complete!');
     } catch (err) {
@@ -493,16 +403,10 @@ export default function App() {
     }
   };
 
-  const previewFilterStyle = useMemo(() => {
-    let filterStr = '';
-    if (grayscale) filterStr += ' grayscale(100%)';
-    if (invert) filterStr += ' invert(100%)';
-    return {
-      filter: filterStr.trim() || 'none',
-      transform: `rotate(${rotation}deg)`,
-      transition: 'filter 150ms ease, transform 200ms ease'
-    };
-  }, [grayscale, invert, rotation]);
+  const previewFilterStyle = useMemo(
+    () => buildPreviewStyle(grayscale, invert, rotation),
+    [grayscale, invert, rotation],
+  );
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-violet-600/30">
@@ -685,6 +589,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setShowGridOverlay(!showGridOverlay)}
+                  title="Toggle grid overlay"
                   className={`text-xs px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 font-medium shadow-lg backdrop-blur transition-all ${
                   showGridOverlay
                     ? 'bg-violet-600/20 border-violet-500/60 text-violet-300'
@@ -827,6 +732,7 @@ export default function App() {
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={clearSelection}
+                        title="Clear selection"
                         className="px-2 py-1.5 rounded-lg hover:bg-zinc-800 text-zinc-300 border border-zinc-700/80 font-medium transition-colors"
                       >
                         Clear
@@ -922,6 +828,7 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setCols(c => Math.max(GRID_MIN, c - 1))}
+                        title="Fewer columns"
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Minus size={13} />
@@ -936,6 +843,7 @@ export default function App() {
                       />
                       <button
                         onClick={() => setCols(c => Math.min(GRID_MAX, c + 1))}
+                        title="More columns"
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Plus size={13} />
@@ -949,6 +857,7 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setRows(r => Math.max(GRID_MIN, r - 1))}
+                        title="Fewer rows"
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Minus size={13} />
@@ -963,6 +872,7 @@ export default function App() {
                       />
                       <button
                         onClick={() => setRows(r => Math.min(GRID_MAX, r + 1))}
+                        title="More rows"
                         className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       >
                         <Plus size={13} />

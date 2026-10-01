@@ -44,14 +44,42 @@ npm run preview
 magick-ui-studio/
 ├── index.html            # Entry HTML (title: Magick UI Studio)
 ├── src/
-│   ├── App.tsx           # Entire studio UI (slicer, inspector, export, CLI)
-│   ├── main.tsx          # React root + global CSS import
-│   └── index.css         # Tailwind directives + dark base theme
+│   ├── App.tsx           # Studio UI (slicer, inspector, export, CLI)
+│   ├── main.tsx          # React root + global CSS import (excluded from coverage)
+│   ├── index.css         # Tailwind directives + dark base theme
+│   ├── test-setup.ts     # jsdom matchers + per-test DOM mocks (excluded)
+│   ├── test-utils.ts     # Image/canvas/URL/clipboard stubs + UI helpers (excluded)
+│   ├── App.*.test.tsx    # Component tests: selection, controls, images, export
+│   └── lib/
+│       ├── tiles.ts          # tileSpan / tileRect / selection math
+│       ├── imagemagick.ts    # single + batch CLI script builders
+│       ├── export-command.ts # CLI panel state → command text (flags, dims, dispatch)
+│       ├── canvas.ts         # rotation/filter canvas rendering + preview style
+│       ├── clamp.ts          # grid/overlap input sanitizers + limits
+│       ├── images.ts         # gallery record builder + ImageRecord type
+│       ├── naming.ts         # tile/zip/archive filename builders
+│       ├── sample.ts         # built-in demo SVG generator
+│       └── *.test.ts         # unit tests (lib modules are at 100% coverage)
 ├── public/               # Static assets (favicons)
 ├── tailwind.config.js    # Tailwind content paths
 ├── postcss.config.js     # Tailwind + Autoprefixer
-└── vite.config.ts        # Vite + React plugin
+└── vite.config.ts        # Vite + React plugin + Vitest (jsdom, coverage ≥90% gate)
 ```
+
+## Testing
+
+```bash
+npm test                 # fast unit + component suite (no coverage)
+
+# coverage gate: lines/functions/branches must each stay ≥ 90%
+# (also enforced in CI). In sandboxes where /tmp is read-only:
+mkdir -p .tmp-vitest && TMPDIR="$PWD/.tmp-vitest" npm run test:coverage
+```
+
+Component tests render `App` in jsdom with stubbed `Image` loading,
+canvas 2D contexts, `URL.createObjectURL`, and clipboard access; export
+tests use the real `JSZip` and assert archive names, toasts, and download
+filenames.
 
 ## Deployment
 
@@ -91,7 +119,9 @@ npm run deploy   # builds (predeploy) and pushes dist/ to gh-pages
 | ---------------- | ----------------------------------------- |
 | `npm run dev`    | Start Vite dev server with HMR            |
 | `npm run build`  | `tsc -b` type-check + Vite production build |
-| `npm test`       | Vitest unit tests (`tileSpan` tile math)      |
+| `npm test`       | Vitest unit + component tests (fast, no coverage) |
+| `npm run test:coverage` | Same suite with V8 coverage; fails under 90% lines/functions/branches |
+| `npm run lint`     | oxlint (React + TS rules)                     |
 | `npm run preview`| Serve `dist/` locally                     |
 | `npm run deploy` | Publish `dist/` to GitHub Pages           |
 

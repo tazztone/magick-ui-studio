@@ -105,3 +105,51 @@ describe('batchCommand', () => {
     expect(batchCommand({ ...opts, shell: 'bash', rotation: 90 })).not.toContain('t=$W');
   });
 });
+
+describe('singleImageCommand exact scripts', () => {
+  const opts = { ...base, mode: 'grid', w: 100, h: 100, cols: 2, rows: 1, overlap: 4 } as const;
+
+  it('emits the exact bash script', () => {
+    expect(singleImageCommand({ ...opts, shell: 'bash' })).toBe(
+      `# Bash Slicing with 4px overlap\ntiles=(\n  "52x100+0+0"\n  "52x100+48+0"\n)\nfor i in "\${!tiles[@]}"; do\n  magick "photo.png" -strip -crop "\${tiles[$i]}" +repage "photo_tile_$i.png"\ndone`,
+    );
+  });
+
+  it('emits the exact powershell script', () => {
+    expect(singleImageCommand({ ...opts, shell: 'powershell' })).toBe(
+      `# PowerShell Slicing with 4px overlap\n$tiles = @(\n  "52x100+0+0",\n  "52x100+48+0"\n)\nfor ($i = 0; $i -lt $tiles.Count; $i++) {\n  magick "photo.png" -strip -crop $tiles[$i] +repage "photo_tile_$i.png"\n}`,
+    );
+  });
+
+  it('emits the exact cmd script', () => {
+    expect(singleImageCommand({ ...opts, shell: 'cmd' })).toBe(
+      `:: Windows CMD Slicing with 4px overlap\nsetlocal enabledelayedexpansion\nset "T0=52x100+0+0"\nset "T1=52x100+48+0"\nset /a n=0\nfor %%g in (%T0% %T1%) do (\n  magick "photo.png" -strip -crop %%g +repage "photo_tile_!n!.png"\n  set /a n+=1\n)`,
+    );
+  });
+
+  it('concatenates empty flags without a double space', () => {
+    expect(
+      singleImageCommand({ ...base, flags: '', shell: 'bash', mode: 'resize', w: 10, h: 10, cols: 1, rows: 1, overlap: 0 }),
+    ).toBe('magick "photo.png" "photo_processed.png"');
+  });
+});
+
+describe('batchCommand exact scripts', () => {
+  it('emits exact non-overlap powershell and cmd loops', () => {
+    const opts = { count: 2, ext: 'png', flags: '', cols: 2, rows: 2, overlap: 0 } as const;
+    expect(batchCommand({ ...opts, shell: 'powershell' })).toBe(
+      `# PowerShell Batch Slicing (2 files)\nNew-Item -ItemType Directory -Force -Path "slices" | Out-Null\nGet-ChildItem -File | ForEach-Object {\n  $base = $_.BaseName\n  if (@('.png','.jpg','.jpeg','.webp','.gif','.bmp','.tiff','.avif','.svg') -notcontains $_.Extension.ToLower()) { return }\n  New-Item -ItemType Directory -Force -Path "slices/$base" | Out-Null\n  magick $_.FullName -crop 2x2@ +repage "slices/$base/$($base)_tile_%d.png"\n}\nWrite-Host "Done!" -ForegroundColor Green`,
+    );
+    expect(batchCommand({ ...opts, shell: 'cmd' })).toBe(
+      `:: Windows CMD Batch (2 files)\n@echo off\nif not exist slices mkdir slices\nfor %%f in (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tiff *.avif *.svg) do (\n  if exist "%%f" (\n  if not exist "slices\\%%~nf" mkdir "slices\\%%~nf"\n  magick "%%f" -crop 2x2@ +repage "slices\\%%~nf\\%%~nf_tile_%%d.png"\n  )\n)\necho Slicing finished!`,
+    );
+  });
+
+  it('treats undefined and 180 rotation identically (no swap)', () => {
+    const opts = { count: 1, ext: 'png', flags: '', cols: 2, rows: 2, overlap: 10 } as const;
+    expect(batchCommand({ ...opts, shell: 'bash' })).toBe(
+      batchCommand({ ...opts, shell: 'bash', rotation: 180 }),
+    );
+    expect(batchCommand({ ...opts, shell: 'bash' })).not.toContain('H=$t');
+  });
+});

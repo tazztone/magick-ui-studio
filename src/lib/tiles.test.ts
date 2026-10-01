@@ -82,6 +82,39 @@ describe('tileRect', () => {
   });
 });
 
+describe('tileSpan edge cases', () => {
+  it('spreads the remainder when tiles outnumber pixels', () => {
+    // 2px over 4 tiles: sizes 0,1,0,1 — still contiguous and complete
+    const sizes = [0, 1, 2, 3].map(i => tileSpan(2, 4, i));
+    expect(sizes.map(s => s.size)).toEqual([0, 1, 0, 1]);
+    expect(sizes[1].off).toBe(0);
+    expect(sizes[3].off).toBe(1);
+  });
+
+  it('handles a single tile covering everything', () => {
+    expect(tileSpan(500, 1, 0)).toEqual({ off: 0, size: 500 });
+    expect(tileRect(500, 1, 0, 10)).toEqual({ off: 0, size: 500 });
+  });
+});
+
+describe('tileRect edge cases', () => {
+  it('clamps a lone tile with overlap to full bleed', () => {
+    expect(tileRect(100, 1, 0, 200)).toEqual({ off: 0, size: 100 });
+  });
+});
+
+describe('rangeIndices edge cases', () => {
+  it('treats zero/NaN cols as a single column', () => {
+    expect(rangeIndices(0, 2, 0)).toEqual([0, 1, 2]);
+    expect(rangeIndices(0, 2, NaN)).toEqual([0, 1, 2]);
+  });
+
+  it('handles negative indices without crashing', () => {
+    // row/col math floors toward -inf; documents current behavior
+    expect(rangeIndices(-4, -1, 3)).toEqual([-7, -4]);
+  });
+});
+
 describe('toggleSelect', () => {
   it('adds a missing tile and removes a present one without mutating', () => {
     const base = new Set([1, 2]);
