@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { tileSpan } from './lib/tiles';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, Grid, Terminal, Download, Copy, 
@@ -42,15 +43,6 @@ const GRID_PRESETS = [
   { label: '4×4 Sheet', rows: 4, cols: 4, desc: '16 Compact Tiles' },
   { label: '1×3 Column', rows: 3, cols: 1, desc: 'Vertical Carousel' },
 ];
-
-// Split `total` px into `n` tiles covering every pixel (tile sizes differ by
-// at most 1px), matching ImageMagick `-crop WxH@` semantics. Returns the
-// pixel offset and size of tile `i` (0-based) along one axis.
-const tileSpan = (total: number, n: number, i: number) => {
-  const off = Math.floor((i * total) / n);
-  const end = Math.floor(((i + 1) * total) / n);
-  return { off, size: end - off };
-};
 
 export default function App() {
   const [images, setImages] = useState<any[]>([]);

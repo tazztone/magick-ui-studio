@@ -91,6 +91,7 @@ npm run deploy   # builds (predeploy) and pushes dist/ to gh-pages
 | ---------------- | ----------------------------------------- |
 | `npm run dev`    | Start Vite dev server with HMR            |
 | `npm run build`  | `tsc -b` type-check + Vite production build |
+| `npm test`       | Vitest unit tests (`tileSpan` tile math)      |
 | `npm run preview`| Serve `dist/` locally                     |
 | `npm run deploy` | Publish `dist/` to GitHub Pages           |
 
