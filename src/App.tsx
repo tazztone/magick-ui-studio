@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
-import { tileSpan } from './lib/tiles';
+import { tileRect, tileSpan } from './lib/tiles';
+import { batchCommand, singleImageCommand, type ShellType } from './lib/imagemagick';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, Grid, Terminal, Download, Copy, 
@@ -54,6 +55,9 @@ export default function App() {
   // Grid parameters
   const [cols, setCols] = useState(3);
   const [rows, setRows] = useState(3);
+  // Overlap (px) shared between adjacent tiles; clamped per tile, see tileRect
+  const [overlap, setOverlap] = useState(0);
+  const overlapPx = Number.isFinite(overlap) ? Math.max(0, Math.floor(overlap)) : 0;
   const [showGridOverlay, setShowGridOverlay] = useState(true);
   const [selectedTile, setSelectedTile] = useState(null);
 
@@ -70,7 +74,7 @@ export default function App() {
   const [quality, setQuality] = useState(90);
 
   // CLI & Terminal state
-  const [shellType, setShellType] = useState('bash'); // 'bash' | 'powershell' | 'cmd'
+  const [shellType, setShellType] = useState<ShellType>('bash'); // 'bash' | 'powershell' | 'cmd'
   const [showCliSnippet, setShowCliSnippet] = useState(false);
   const [copiedNotification, setCopiedNotification] = useState(false);
 
@@ -84,12 +88,14 @@ export default function App() {
 
   const activeImage = images[activeIndex] || null;
 
-  // Actual px size of the selected tile (edge tiles can be ±1px, see tileSpan)
+  // Actual px size of the selected tile (base span + overlap extension)
   const selectedTileSize =
     selectedTile && activeImage
       ? {
           w: tileSpan(activeImage.width, cols, selectedTile.col).size,
           h: tileSpan(activeImage.height, rows, selectedTile.row).size,
+          ew: tileRect(activeImage.width, cols, selectedTile.col, overlapPx).size,
+          eh: tileRect(activeImage.height, rows, selectedTile.row, overlapPx).size,
         }
       : null;
 
@@ -199,22 +205,33 @@ export default function App() {
     const flagStr = flags.length > 0 ? ` ${flags.join(' ')}` : '';
 
     if (images.length === 1) {
-      if (activeTab === 'grid') {
-        return `magick "${current.name}"${flagStr} -crop ${cols}x${rows}@ +repage "${current.baseName}_tile_%d.${ext}"`;
-      }
-      return `magick "${current.name}"${flagStr} "${current.baseName}_processed.${ext}"`;
+      const rot90 = rotation === 90 || rotation === 270;
+      return singleImageCommand({
+        name: current.name,
+        baseName: current.baseName,
+        ext,
+        flags: flagStr,
+        shell: shellType,
+        mode: activeTab,
+        w: rot90 ? current.height : current.width,
+        h: rot90 ? current.width : current.height,
+        cols,
+        rows,
+        overlap: overlapPx,
+      });
     }
 
-    if (shellType === 'bash') {
-      return `#!/usr/bin/env bash\n# Process ${images.length} images with ImageMagick\nmkdir -p slices\nfor f in *.*; do\n  [ -e "$f" ] || continue\n  base="\${f%.*}"\n  mkdir -p "slices/$base"\n  magick "$f"${flagStr} -crop ${cols}x${rows}@ +repage "slices/$base/\${base}_tile_%d.${ext}"\ndone\necho "Slicing complete!"`;
-    }
 
-    if (shellType === 'powershell') {
-      return `# PowerShell Batch Slicing (${images.length} files)\nNew-Item -ItemType Directory -Force -Path "slices" | Out-Null\nGet-ChildItem -File | ForEach-Object {\n  $base = $_.BaseName\n  New-Item -ItemType Directory -Force -Path "slices/$base" | Out-Null\n  magick $_.FullName${flagStr} -crop ${cols}x${rows}@ +repage "slices/$base/$($base)_tile_%d.${ext}"\n}\nWrite-Host "Done!" -ForegroundColor Green`;
-    }
-
-    return `:: Windows CMD Batch (${images.length} files)\n@echo off\nif not exist slices mkdir slices\nfor %%f in (*.*) do (\n  if not exist "slices\\%%~nf" mkdir "slices\\%%~nf"\n  magick "%%f"${flagStr} -crop ${cols}x${rows}@ +repage "slices\\%%~nf\\%%~nf_tile_%%d.${ext}"\n)\necho Slicing finished!`;
-  }, [images, activeImage, activeTab, cols, rows, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
+    return batchCommand({
+      count: images.length,
+      ext,
+      flags: flagStr,
+      shell: shellType,
+      cols,
+      rows,
+      overlap: activeTab === 'grid' ? overlapPx : 0,
+    });
+  }, [images, activeImage, activeTab, cols, rows, overlapPx, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
 
   const copyCliCode = () => {
     try {
@@ -269,8 +286,8 @@ export default function App() {
     const ext = outputFormat === 'jpeg' ? 'jpg' : outputFormat;
     const mimeType = `image/${outputFormat}`;
     const baseCanvas = renderTransformedCanvas(activeImage.imgElement, activeImage.width, activeImage.height);
-    const { off: tileX, size: tileW } = tileSpan(baseCanvas.width, cols, c);
-    const { off: tileY, size: tileH } = tileSpan(baseCanvas.height, rows, r);
+    const { off: tileX, size: tileW } = tileRect(baseCanvas.width, cols, c, overlapPx);
+    const { off: tileY, size: tileH } = tileRect(baseCanvas.height, rows, r, overlapPx);
     if (tileW === 0 || tileH === 0) { showToast('Tile has zero size at this grid'); return; }
     const tileCanvas = document.createElement('canvas');
     tileCanvas.width = tileW;
@@ -311,9 +328,9 @@ export default function App() {
           let count = 0;
 
           for (let r = 0; r < rows; r++) {
-            const { off: tileY, size: tileH } = tileSpan(rendered.height, rows, r);
+            const { off: tileY, size: tileH } = tileRect(rendered.height, rows, r, overlapPx);
             for (let c = 0; c < cols; c++) {
-              const { off: tileX, size: tileW } = tileSpan(rendered.width, cols, c);
+              const { off: tileX, size: tileW } = tileRect(rendered.width, cols, c, overlapPx);
               if (tileW === 0 || tileH === 0) { count++; continue; }
               const tileCanvas = document.createElement('canvas');
               tileCanvas.width = tileW;
@@ -511,7 +528,7 @@ export default function App() {
                 }`}
               >
                 {showGridOverlay ? <Eye size={13} /> : <EyeOff size={13} />}
-                <span>{showGridOverlay ? `${cols}×${rows} Grid` : 'Grid Off'}</span>
+                <span>{showGridOverlay ? `${cols}×${rows} Grid${overlapPx > 0 ? ` +${overlapPx}` : ''}` : 'Grid Off'}</span>
               </button>
             )}
 
@@ -554,27 +571,29 @@ export default function App() {
                   className="max-h-[50vh] lg:max-h-[60vh] max-w-[85vw] lg:max-w-[42vw] object-contain block bg-zinc-950"
                 />
 
-                {/* Grid Overlay Slices */}
+                {/* Grid Overlay Slices (rects mirror export math, incl. overlap) */}
                 {activeTab === 'grid' && showGridOverlay && (
-                  <div
-                    className="absolute inset-0 z-10 grid border-2 border-violet-500/80"
-                    style={{
-                      gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                      gridTemplateRows: `repeat(${rows}, 1fr)`
-                    }}
-                  >
+                  <div className="absolute inset-0 z-10 border-2 border-violet-500/80 pointer-events-none">
                     {Array.from({ length: cols * rows }).map((_, i) => {
                       const r = Math.floor(i / cols);
                       const c = i % cols;
                       const isSel = selectedTile?.index === i;
+                      const xr = tileRect(activeImage.width, cols, c, overlapPx);
+                      const yr = tileRect(activeImage.height, rows, r, overlapPx);
                       return (
                         <div
                           key={i}
                           onClick={() => setSelectedTile({ index: i, row: r, col: c })}
-                          className={`border border-violet-400/50 relative cursor-pointer transition-colors ${
+                          style={{
+                            left: `${(xr.off / activeImage.width) * 100}%`,
+                            top: `${(yr.off / activeImage.height) * 100}%`,
+                            width: `${(xr.size / activeImage.width) * 100}%`,
+                            height: `${(yr.size / activeImage.height) * 100}%`,
+                          }}
+                          className={`absolute border border-violet-400/50 cursor-pointer transition-colors pointer-events-auto ${
                             isSel
                               ? 'bg-violet-600/35 ring-2 ring-violet-400 ring-inset'
-                              : 'hover:bg-violet-500/20 active:bg-violet-500/30'
+                              : 'bg-violet-500/10 hover:bg-violet-500/20 active:bg-violet-500/30'
                           }`}
                         >
                           <span className="absolute top-1 left-1 text-[9px] font-mono px-1 py-0.2 rounded bg-black/70 text-violet-300 font-bold backdrop-blur">
@@ -597,6 +616,9 @@ export default function App() {
                   </div>
                   <div className="text-[11px] font-mono text-violet-400">
                     {selectedTileSize ? `${selectedTileSize.w} × ${selectedTileSize.h} px` : '—'}
+                    {selectedTileSize && overlapPx > 0 && (
+                      <span className="text-zinc-500"> (+{overlapPx} → {selectedTileSize.ew} × {selectedTileSize.eh})</span>
+                    )}
                   </div>
                 </div>
                 <button
@@ -735,6 +757,40 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Overlap Control */}
+                <div className="bg-zinc-900 p-3 rounded-xl border border-zinc-800">
+                  <div className="flex justify-between items-center text-xs mb-2">
+                    <span className="text-zinc-300 font-medium">Tile Overlap</span>
+                    <span className="font-mono font-bold text-violet-400">{overlapPx}px</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setOverlap(o => Math.max(0, Math.floor(Number.isFinite(o) ? o : 0) - 1))}
+                      className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
+                      title="Less overlap"
+                    >
+                      <Minus size={13} />
+                    </button>
+                    <input
+                      type="range"
+                      min="0"
+                      max="128"
+                      step="1"
+                      value={overlapPx}
+                      onChange={(e) => setOverlap(Number(e.target.value))}
+                      className="flex-1 accent-violet-500 bg-zinc-800 cursor-pointer h-2 rounded-lg"
+                    />
+                    <button
+                      onClick={() => setOverlap(o => Math.min(512, Math.floor(Number.isFinite(o) ? o : 0) + 1))}
+                      className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
+                      title="More overlap"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-zinc-500 mt-1.5">Shared strip between neighbors. 0 = edge-to-edge.</div>
+                </div>
+
                 {/* Slicing Metrics Box */}
                 <div className="bg-zinc-900/60 p-3 rounded-xl border border-zinc-800 text-xs space-y-1">
                   <div className="flex justify-between">
@@ -745,10 +801,23 @@ export default function App() {
                     <div className="flex justify-between">
                       <span className="text-zinc-400">Tile Dimensions:</span>
                       <span className="font-mono text-zinc-300">
-                        {Math.floor(activeImage.width / cols)} × {Math.floor(activeImage.height / rows)} px
+                        {tileSpan(activeImage.width, cols, 0).size} × {tileSpan(activeImage.height, rows, 0).size} px
+                        {overlapPx > 0 && <span className="text-violet-400"> (+{overlapPx})</span>}
                       </span>
                     </div>
                   )}
+                  {activeImage && overlapPx > 0 && (() => {
+                    const spans = [
+                      ...Array.from({ length: cols }, (_, c) => tileSpan(activeImage.width, cols, c).size),
+                      ...Array.from({ length: rows }, (_, r) => tileSpan(activeImage.height, rows, r).size),
+                    ];
+                    const minTile = Math.min(...spans);
+                    return minTile > 0 && overlapPx >= minTile ? (
+                      <div className="text-[11px] text-amber-400/90 pt-1">
+                        Overlap ≥ smallest tile ({minTile}px) — edge tiles go full-bleed.
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
               </div>
             )}
