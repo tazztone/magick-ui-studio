@@ -1,6 +1,10 @@
 import JSZip from 'jszip';
 import { tileRect, tileSpan } from './lib/tiles';
 import { batchCommand, singleImageCommand, type ShellType } from './lib/imagemagick';
+
+/** Sanitize overlap input to a non-negative integer px value. */
+const clampOverlap = (o: unknown): number =>
+  Number.isFinite(o as number) ? Math.max(0, Math.floor(o as number)) : 0;
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, Grid, Terminal, Download, Copy, 
@@ -57,7 +61,7 @@ export default function App() {
   const [rows, setRows] = useState(3);
   // Overlap (px) shared between adjacent tiles; clamped per tile, see tileRect
   const [overlap, setOverlap] = useState(0);
-  const overlapPx = Number.isFinite(overlap) ? Math.max(0, Math.floor(overlap)) : 0;
+  const overlapPx = clampOverlap(overlap);
   const [showGridOverlay, setShowGridOverlay] = useState(true);
   const [selectedTile, setSelectedTile] = useState(null);
 
@@ -230,6 +234,7 @@ export default function App() {
       cols,
       rows,
       overlap: activeTab === 'grid' ? overlapPx : 0,
+      rotation,
     });
   }, [images, activeImage, activeTab, cols, rows, overlapPx, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
 
@@ -765,7 +770,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setOverlap(o => Math.max(0, Math.floor(Number.isFinite(o) ? o : 0) - 1))}
+                      onClick={() => setOverlap(o => Math.max(0, clampOverlap(o) - 1))}
                       className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       title="Less overlap"
                     >
@@ -781,7 +786,7 @@ export default function App() {
                       className="flex-1 accent-violet-500 bg-zinc-800 cursor-pointer h-2 rounded-lg"
                     />
                     <button
-                      onClick={() => setOverlap(o => Math.min(512, Math.floor(Number.isFinite(o) ? o : 0) + 1))}
+                      onClick={() => setOverlap(o => Math.min(512, clampOverlap(o) + 1))}
                       className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 flex items-center justify-center transition-transform"
                       title="More overlap"
                     >
@@ -801,8 +806,8 @@ export default function App() {
                     <div className="flex justify-between">
                       <span className="text-zinc-400">Tile Dimensions:</span>
                       <span className="font-mono text-zinc-300">
-                        {tileSpan(activeImage.width, cols, 0).size} × {tileSpan(activeImage.height, rows, 0).size} px
-                        {overlapPx > 0 && <span className="text-violet-400"> (+{overlapPx})</span>}
+                        {tileRect(activeImage.width, cols, 0, overlapPx).size} × {tileRect(activeImage.height, rows, 0, overlapPx).size} px
+                        {overlapPx > 0 && <span className="text-violet-400"> (base {tileSpan(activeImage.width, cols, 0).size} × {tileSpan(activeImage.height, rows, 0).size} +{overlapPx})</span>}
                       </span>
                     </div>
                   )}

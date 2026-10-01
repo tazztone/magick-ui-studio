@@ -59,6 +59,7 @@ export type BatchOpts = {
   cols: number;
   rows: number;
   overlap: number;
+  rotation?: number;
 };
 
 /** Generic directory scripts (no concrete filenames); overlap geometries are
@@ -67,10 +68,11 @@ export const batchCommand = (o: BatchOpts): string => {
   const overlapActive = o.overlap > 0;
   const bf = Math.floor(o.overlap / 2);
   const af = o.overlap - bf;
+  const rot90 = o.rotation === 90 || o.rotation === 270;
   if (o.shell === 'powershell') {
     const extGuard = `if (@('.png','.jpg','.jpeg','.webp','.gif','.bmp','.tiff','.avif','.svg') -notcontains $_.Extension.ToLower()) { return }`;
     if (overlapActive) {
-      return `# PowerShell Batch Slicing (${o.count} files, overlap ${o.overlap}px)\n$C=${o.cols}; $R=${o.rows}; $BF=${bf}; $AF=${af}\nNew-Item -ItemType Directory -Force -Path "slices" | Out-Null\nGet-ChildItem -File | ForEach-Object {\n  $base = $_.BaseName\n  ${extGuard}\n  New-Item -ItemType Directory -Force -Path "slices/$base" | Out-Null\n  $dim = (magick identify -format "%w %h" $_.FullName).Split()\n  $W = [int]$dim[0]; $H = [int]$dim[1]\n  if ($W -le 0 -or $H -le 0) { return }\n  $n = 0\n  for ($r = 0; $r -lt $R; $r++) {\n    $ro = [math]::Floor($r*$H/$R); $rs = [math]::Floor(($r+1)*$H/$R) - $ro\n    $y0 = $ro; if ($r -gt 0) { $y0 = $ro - $BF }; if ($y0 -lt 0) { $y0 = 0 }\n    $y1 = $ro+$rs; if ($r -lt ($R-1)) { $y1 = $ro+$rs+$AF }; if ($y1 -gt $H) { $y1 = $H }\n    $th = $y1-$y0\n    for ($c = 0; $c -lt $C; $c++) {\n      $co = [math]::Floor($c*$W/$C); $cs = [math]::Floor(($c+1)*$W/$C) - $co\n      $x0 = $co; if ($c -gt 0) { $x0 = $co - $BF }; if ($x0 -lt 0) { $x0 = 0 }\n      $x1 = $co+$cs; if ($c -lt ($C-1)) { $x1 = $co+$cs+$AF }; if ($x1 -gt $W) { $x1 = $W }\n      $tw = $x1-$x0\n      magick $_.FullName${o.flags} -crop "\${tw}x\${th}+\${x0}+\${y0}" +repage "slices/$base/$($base)_tile_$n.${o.ext}"\n      $n++\n    }\n  }\n}\nWrite-Host "Done!" -ForegroundColor Green`;
+      return `# PowerShell Batch Slicing (${o.count} files, overlap ${o.overlap}px)\n$C=${o.cols}; $R=${o.rows}; $BF=${bf}; $AF=${af}\nNew-Item -ItemType Directory -Force -Path "slices" | Out-Null\nGet-ChildItem -File | ForEach-Object {\n  $base = $_.BaseName\n  ${extGuard}\n  New-Item -ItemType Directory -Force -Path "slices/$base" | Out-Null\n  $dim = (magick identify -format "%w %h" $_.FullName).Split()\n  $W = [int]$dim[0]; $H = [int]$dim[1]\n  if ($W -le 0 -or $H -le 0) { return }\n${rot90 ? '  $t=$W; $W=$H; $H=$t' : ''}\n  $n = 0\n  for ($r = 0; $r -lt $R; $r++) {\n    $ro = [math]::Floor($r*$H/$R); $rs = [math]::Floor(($r+1)*$H/$R) - $ro\n    $y0 = $ro; if ($r -gt 0) { $y0 = $ro - $BF }; if ($y0 -lt 0) { $y0 = 0 }\n    $y1 = $ro+$rs; if ($r -lt ($R-1)) { $y1 = $ro+$rs+$AF }; if ($y1 -gt $H) { $y1 = $H }\n    $th = $y1-$y0\n    for ($c = 0; $c -lt $C; $c++) {\n      $co = [math]::Floor($c*$W/$C); $cs = [math]::Floor(($c+1)*$W/$C) - $co\n      $x0 = $co; if ($c -gt 0) { $x0 = $co - $BF }; if ($x0 -lt 0) { $x0 = 0 }\n      $x1 = $co+$cs; if ($c -lt ($C-1)) { $x1 = $co+$cs+$AF }; if ($x1 -gt $W) { $x1 = $W }\n      $tw = $x1-$x0\n      magick $_.FullName${o.flags} -crop "\${tw}x\${th}+\${x0}+\${y0}" +repage "slices/$base/$($base)_tile_$n.${o.ext}"\n      $n++\n    }\n  }\n}\nWrite-Host "Done!" -ForegroundColor Green`;
     }
     return `# PowerShell Batch Slicing (${o.count} files)\nNew-Item -ItemType Directory -Force -Path "slices" | Out-Null\nGet-ChildItem -File | ForEach-Object {\n  $base = $_.BaseName\n  ${extGuard}\n  New-Item -ItemType Directory -Force -Path "slices/$base" | Out-Null\n  magick $_.FullName${o.flags} -crop ${o.cols}x${o.rows}@ +repage "slices/$base/$($base)_tile_%d.${o.ext}"\n}\nWrite-Host "Done!" -ForegroundColor Green`;
   }
@@ -85,28 +87,28 @@ export const batchCommand = (o: BatchOpts): string => {
             `  set /a "ro=${r}*%H%/${o.rows}"\n` +
             `  set /a "rs=${r + 1}*%H%/${o.rows}-ro"\n` +
             `  set /a "y0=${r > 0 ? `ro-${bf}` : 'ro'}"\n` +
-            `  set /a "y0=y0<0?0:y0"\n` +
+            (r > 0 ? `  if %y0% LSS 0 set "y0=0"\n` : '') +
             `  set /a "y1=${r < o.rows - 1 ? `ro+rs+${af}` : 'ro+rs'}"\n` +
-            `  set /a "y1=y1>%H%?%H%:y1"\n` +
+            (r < o.rows - 1 ? `  if %y1% GTR %H% set "y1=%H%"\n` : '') +
             `  set /a "co=${c}*%W%/${o.cols}"\n` +
             `  set /a "cs=${c + 1}*%W%/${o.cols}-co"\n` +
             `  set /a "x0=${c > 0 ? `co-${bf}` : 'co'}"\n` +
-            `  set /a "x0=x0<0?0:x0"\n` +
+            (c > 0 ? `  if %x0% LSS 0 set "x0=0"\n` : '') +
             `  set /a "x1=${c < o.cols - 1 ? `co+cs+${af}` : 'co+cs'}"\n` +
-            `  set /a "x1=x1>%W%?%W%:x1"\n` +
+            (c < o.cols - 1 ? `  if %x1% GTR %W% set "x1=%W%"\n` : '') +
             `  set /a "tw=x1-x0" & set /a "th=y1-y0"\n` +
             `  magick "%~1"${o.flags} -crop %tw%x%th%+%x0%+%y0% +repage "slices\\%~n1\\%~n1_tile_${k}.${o.ext}"`,
           );
           k++;
         }
       }
-      return `:: Windows CMD Batch (${o.count} files, overlap ${o.overlap}px)\n@echo off\nsetlocal\nif not exist slices mkdir slices\nfor %%f in (${imgGlobs}) do if exist "%%f" call :slice "%%f"\nexit /b\n\n:slice\nset "W=" & set "H="\nfor /f "tokens=1,2" %%w in ('magick identify -format "%%w %%h" "%~1"') do set "W=%%w" & set "H=%%h"\nif not defined W exit /b\nif not defined H exit /b\nif not exist "slices\\%~n1" mkdir "slices\\%~n1"\n${blocks.join('\n')}\nexit /b`;
+      return `:: Windows CMD Batch (${o.count} files, overlap ${o.overlap}px)\n@echo off\nsetlocal\nif not exist slices mkdir slices\nfor %%f in (${imgGlobs}) do if exist "%%f" call :slice "%%f"\nexit /b\n\n:slice\nset "W=" & set "H="\nfor /f "tokens=1,2" %%w in ('magick identify -format "%%w %%h" "%~1"') do set "W=%%w" & set "H=%%h"\nif not defined W exit /b\nif not defined H exit /b\n${rot90 ? 'set "t=%W%" & set "W=%H%" & set "H=%t%"' : ''}\nif not exist "slices\\%~n1" mkdir "slices\\%~n1"\n${blocks.join('\n')}\nexit /b`;
     }
     return `:: Windows CMD Batch (${o.count} files)\n@echo off\nif not exist slices mkdir slices\nfor %%f in (${imgGlobs}) do (\n  if exist "%%f" (\n  if not exist "slices\\%%~nf" mkdir "slices\\%%~nf"\n  magick "%%f"${o.flags} -crop ${o.cols}x${o.rows}@ +repage "slices\\%%~nf\\%%~nf_tile_%%d.${o.ext}"\n  )\n)\necho Slicing finished!`;
   }
   const bashGuard = 'for f in *.*; do\n  [ -e "$f" ] || continue\n  case "${f##*.}" in\n    [Pp][Nn][Gg]|[Jj][Pp][Gg]|[Jj][Pp][Ee][Gg]|[Ww][Ee][Bb][Pp]|[Gg][Ii][Ff]|[Bb][Mm][Pp]|[Tt][Ii][Ff][Ff]|[Aa][Vv][Ii][Ff]|[Ss][Vv][Gg]) ;;\n    *) continue ;;\n  esac';
   if (overlapActive) {
-    return `#!/usr/bin/env bash\n# Process ${o.count} images with ImageMagick (overlap ${o.overlap}px)\nC=${o.cols}; R=${o.rows}; BF=${bf}; AF=${af}\nmkdir -p slices\n${bashGuard}\n  base="\${f%.*}"\n  mkdir -p "slices/$base"\n  read W H <<< $(magick identify -format "%w %h" "$f")\n  [ -z "$W" ] && continue\n  n=0\n  for ((r=0; r<R; r++)); do\n    ro=$((r*H/R)); rs=$(((r+1)*H/R-ro))\n    if [ $r -gt 0 ]; then y0=$((ro-BF)); else y0=$ro; fi\n    if [ $y0 -lt 0 ]; then y0=0; fi\n    if [ $r -lt $((R-1)) ]; then y1=$((ro+rs+AF)); else y1=$((ro+rs)); fi\n    if [ $y1 -gt $H ]; then y1=$H; fi\n    th=$((y1-y0))\n    for ((c=0; c<C; c++)); do\n      co=$((c*W/C)); cs=$(((c+1)*W/C-co))\n      if [ $c -gt 0 ]; then x0=$((co-BF)); else x0=$co; fi\n      if [ $x0 -lt 0 ]; then x0=0; fi\n      if [ $c -lt $((C-1)) ]; then x1=$((co+cs+AF)); else x1=$((co+cs)); fi\n      if [ $x1 -gt $W ]; then x1=$W; fi\n      tw=$((x1-x0))\n      magick "$f"${o.flags} -crop "\${tw}x\${th}+\${x0}+\${y0}" +repage "slices/$base/\${base}_tile_$n.${o.ext}"\n      n=$((n+1))\n    done\n  done\ndone\necho "Slicing complete!"`;
+    return `#!/usr/bin/env bash\n# Process ${o.count} images with ImageMagick (overlap ${o.overlap}px)\nC=${o.cols}; R=${o.rows}; BF=${bf}; AF=${af}\nmkdir -p slices\n${bashGuard}\n  base="\${f%.*}"\n  mkdir -p "slices/$base"\n  read W H <<< $(magick identify -format "%w %h" "$f")\n  [ -z "$W" ] && continue\n${rot90 ? '  t=$W; W=$H; H=$t' : ''}\n  n=0\n  for ((r=0; r<R; r++)); do\n    ro=$((r*H/R)); rs=$(((r+1)*H/R-ro))\n    if [ $r -gt 0 ]; then y0=$((ro-BF)); else y0=$ro; fi\n    if [ $y0 -lt 0 ]; then y0=0; fi\n    if [ $r -lt $((R-1)) ]; then y1=$((ro+rs+AF)); else y1=$((ro+rs)); fi\n    if [ $y1 -gt $H ]; then y1=$H; fi\n    th=$((y1-y0))\n    for ((c=0; c<C; c++)); do\n      co=$((c*W/C)); cs=$(((c+1)*W/C-co))\n      if [ $c -gt 0 ]; then x0=$((co-BF)); else x0=$co; fi\n      if [ $x0 -lt 0 ]; then x0=0; fi\n      if [ $c -lt $((C-1)) ]; then x1=$((co+cs+AF)); else x1=$((co+cs)); fi\n      if [ $x1 -gt $W ]; then x1=$W; fi\n      tw=$((x1-x0))\n      magick "$f"${o.flags} -crop "\${tw}x\${th}+\${x0}+\${y0}" +repage "slices/$base/\${base}_tile_$n.${o.ext}"\n      n=$((n+1))\n    done\n  done\ndone\necho "Slicing complete!"`;
   }
   return `#!/usr/bin/env bash\n# Process ${o.count} images with ImageMagick\nmkdir -p slices\n${bashGuard}\n  base="\${f%.*}"\n  mkdir -p "slices/$base"\n  magick "$f"${o.flags} -crop ${o.cols}x${o.rows}@ +repage "slices/$base/\${base}_tile_%d.${o.ext}"\ndone\necho "Slicing complete!"`;
 };

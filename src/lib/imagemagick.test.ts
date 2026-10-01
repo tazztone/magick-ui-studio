@@ -86,5 +86,22 @@ describe('batchCommand', () => {
     expect(cmd).toContain('if not defined W exit /b');
     // one magick line per tile (3x2 = 6)
     expect(cmd.split('magick "%~1"').length - 1).toBe(6);
+    // CMD set /a has no ternary: clamps must be LSS/GTR guards
+    expect(cmd).not.toMatch(/set \/a ".*\?.*:.*"/);
+    expect(cmd).toContain('if %y0% LSS 0');
+    expect(cmd).toContain('if %y1% GTR %H%');
+    expect(cmd).toContain('if %x0% LSS 0');
+    expect(cmd).toContain('if %x1% GTR %W%');
+  });
+
+  it('swaps W/H at runtime for 90/270 rotation when overlap is active', () => {
+    const o = { ...opts, overlap: 10 };
+    expect(batchCommand({ ...o, shell: 'bash', rotation: 90 })).toContain('t=$W; W=$H; H=$t');
+    expect(batchCommand({ ...o, shell: 'powershell', rotation: 270 })).toContain('$t=$W; $W=$H; $H=$t');
+    expect(batchCommand({ ...o, shell: 'cmd', rotation: 90 })).toContain('set "t=%W%" & set "W=%H%" & set "H=%t%"');
+    // 0/180 need no swap; overlap-0 loops never carry it either
+    expect(batchCommand({ ...o, shell: 'bash', rotation: 0 })).not.toContain('t=$W');
+    expect(batchCommand({ ...o, shell: 'bash', rotation: 180 })).not.toContain('t=$W');
+    expect(batchCommand({ ...opts, shell: 'bash', rotation: 90 })).not.toContain('t=$W');
   });
 });
