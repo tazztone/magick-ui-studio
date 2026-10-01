@@ -38,10 +38,6 @@ npm run build
 npm run preview
 ```
 
-> **Sandbox note:** if your npm registry mirror blocks packages, install with
-> the official registry and a project-local cache:
-> `npm --cache ./.npm-cache --registry=https://registry.npmjs.org install`
-
 ## Project structure
 
 ```
