@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { tileRect, tileSpan } from './lib/tiles';
+import { rangeIndices, tileRect, tileSpan, toggleSelect } from './lib/tiles';
 import { batchCommand, singleImageCommand, type ShellType } from './lib/imagemagick';
 
 /** Sanitize overlap input to a non-negative integer px value. */
@@ -63,7 +63,9 @@ export default function App() {
   const [overlap, setOverlap] = useState(0);
   const overlapPx = clampOverlap(overlap);
   const [showGridOverlay, setShowGridOverlay] = useState(true);
-  const [selectedTile, setSelectedTile] = useState(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
+  const [selectMode, setSelectMode] = useState(false); // sticky multi-select for touch
 
   // Resize parameters
   const [resizePercent, setResizePercent] = useState(100);
@@ -92,20 +94,65 @@ export default function App() {
 
   const activeImage = images[activeIndex] || null;
 
-  // Actual px size of the selected tile (base span + overlap extension)
+  // Single-selection derived helpers (multi-select keeps a Set of tile indices).
+  const singleSelectedIndex = selected.size === 1 ? [...selected][0] : null;
+  const singleRow = singleSelectedIndex != null ? Math.floor(singleSelectedIndex / Math.max(1, cols)) : null;
+  const singleCol = singleSelectedIndex != null ? singleSelectedIndex % Math.max(1, cols) : null;
+  // Actual px size of the single selected tile (base span + overlap extension)
   const selectedTileSize =
-    selectedTile && activeImage
+    singleSelectedIndex != null && activeImage && singleRow != null && singleCol != null
       ? {
-          w: tileSpan(activeImage.width, cols, selectedTile.col).size,
-          h: tileSpan(activeImage.height, rows, selectedTile.row).size,
-          ew: tileRect(activeImage.width, cols, selectedTile.col, overlapPx).size,
-          eh: tileRect(activeImage.height, rows, selectedTile.row, overlapPx).size,
+          index: singleSelectedIndex,
+          row: singleRow,
+          col: singleCol,
+          w: tileSpan(activeImage.width, cols, singleCol).size,
+          h: tileSpan(activeImage.height, rows, singleRow).size,
+          ew: tileRect(activeImage.width, cols, singleCol, overlapPx).size,
+          eh: tileRect(activeImage.height, rows, singleRow, overlapPx).size,
         }
       : null;
 
   useEffect(() => {
-    setSelectedTile(null);
+    setSelected(new Set());
+    setAnchorIndex(null);
   }, [activeIndex, cols, rows]);
+
+  // Esc clears the tile selection when the grid tab is active.
+  useEffect(() => {
+    if (activeTab !== 'grid' || selected.size === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelected(new Set());
+        setAnchorIndex(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activeTab, selected.size]);
+
+  const clearSelection = () => {
+    setSelected(new Set());
+    setAnchorIndex(null);
+  };
+
+  const selectAllTiles = () => {
+    setSelected(new Set(Array.from({ length: cols * rows }, (_, i) => i)));
+    setAnchorIndex(0);
+  };
+
+  // Click = single select, Ctrl/Cmd+click (or sticky selectMode) = toggle,
+  // Shift+click = rect-range from the anchor tile.
+  const handleTileClick = (e: React.MouseEvent, i: number) => {
+    if (e.shiftKey && anchorIndex != null) {
+      setSelected(new Set(rangeIndices(anchorIndex, i, cols)));
+    } else if (e.metaKey || e.ctrlKey || selectMode) {
+      setSelected(prev => toggleSelect(prev, i));
+      setAnchorIndex(i);
+    } else {
+      setSelected(prev => (prev.size === 1 && prev.has(i) ? new Set() : new Set([i])));
+      setAnchorIndex(i);
+    }
+  };
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -305,6 +352,45 @@ export default function App() {
     const tileIdx = r * cols + c;
     downloadBlob(blob, `${activeImage.baseName}_tile_${tileIdx}.${ext}`);
     showToast(`Exported tile #${tileIdx}`);
+  };
+
+  const downloadSelectedTiles = async () => {
+    if (!activeImage || selected.size === 0) return;
+    const indices = [...selected].sort((a, b) => a - b);
+    if (indices.length === 1) {
+      await downloadSingleTile(Math.floor(indices[0] / cols), indices[0] % cols);
+      return;
+    }
+    setIsProcessing(true);
+    try {
+      const zip = new JSZip();
+      const ext = outputFormat === 'jpeg' ? 'jpg' : outputFormat;
+      const mimeType = `image/${outputFormat}`;
+      const baseCanvas = renderTransformedCanvas(activeImage.imgElement, activeImage.width, activeImage.height);
+      for (const idx of indices) {
+        const r = Math.floor(idx / cols);
+        const c = idx % cols;
+        const { off: tileX, size: tileW } = tileRect(baseCanvas.width, cols, c, overlapPx);
+        const { off: tileY, size: tileH } = tileRect(baseCanvas.height, rows, r, overlapPx);
+        if (tileW === 0 || tileH === 0) continue;
+        const tileCanvas = document.createElement('canvas');
+        tileCanvas.width = tileW;
+        tileCanvas.height = tileH;
+        const tCtx = tileCanvas.getContext('2d');
+        if (!tCtx) continue;
+        tCtx.drawImage(baseCanvas, tileX, tileY, tileW, tileH, 0, 0, tileW, tileH);
+        const blob: Blob | null = await new Promise<Blob | null>(res => tileCanvas.toBlob(res, mimeType, quality / 100));
+        if (blob) zip.file(`${activeImage.baseName}_tile_${idx}.${ext}`, blob);
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      downloadBlob(zipBlob, `${activeImage.baseName}_selected_${indices.length}.zip`);
+      showToast(`Exported ${indices.length} tiles`);
+    } catch (err) {
+      console.error(err);
+      showToast('Export failed. Check console.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleBatchExport = async () => {
@@ -522,19 +608,52 @@ export default function App() {
               </div>
             )}
 
-            {/* Grid Overlay Toggle */}
+            {/* Grid + multi-select controls */}
             {activeImage && activeTab === 'grid' && (
-              <button
-                onClick={() => setShowGridOverlay(!showGridOverlay)}
-                className={`absolute top-3 right-3 z-20 text-xs px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 font-medium shadow-lg backdrop-blur transition-all ${
+              <div className="absolute top-3 right-3 z-20 flex items-center justify-end flex-wrap gap-1.5 max-w-[72vw] sm:max-w-none">
+                {selected.size > 0 && (
+                  <div className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg border bg-zinc-900/90 border-zinc-700/80 shadow-lg backdrop-blur font-medium">
+                    <span className="text-violet-300 font-semibold">{selected.size} selected</span>
+                    <button
+                      onClick={selectAllTiles}
+                      className="px-1.5 py-0.5 rounded hover:bg-zinc-800 text-zinc-300 transition-colors"
+                      title="Select all tiles"
+                    >
+                      All
+                    </button>
+                    <button
+                      onClick={clearSelection}
+                      className="p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+                      title="Clear selection (Esc)"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                )}
+                <button
+                  onClick={() => setSelectMode(m => !m)}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 font-medium shadow-lg backdrop-blur transition-all ${
+                    selectMode
+                      ? 'bg-violet-600/30 border-violet-500/60 text-violet-200'
+                      : 'bg-zinc-900/90 border-zinc-800 text-zinc-400'
+                  }`}
+                  title="Sticky multi-select for touch: taps toggle tiles. Tip: Ctrl/Cmd+click adds, Shift+click selects a range."
+                >
+                  <Check size={13} />
+                  <span>Multi</span>
+                </button>
+                <button
+                  onClick={() => setShowGridOverlay(!showGridOverlay)}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 font-medium shadow-lg backdrop-blur transition-all ${
                   showGridOverlay
                     ? 'bg-violet-600/20 border-violet-500/60 text-violet-300'
                     : 'bg-zinc-900/90 border-zinc-800 text-zinc-400'
                 }`}
-              >
-                {showGridOverlay ? <Eye size={13} /> : <EyeOff size={13} />}
-                <span>{showGridOverlay ? `${cols}×${rows} Grid${overlapPx > 0 ? ` +${overlapPx}` : ''}` : 'Grid Off'}</span>
-              </button>
+                >
+                  {showGridOverlay ? <Eye size={13} /> : <EyeOff size={13} />}
+                  <span>{showGridOverlay ? `${cols}×${rows} Grid${overlapPx > 0 ? ` +${overlapPx}` : ''}` : 'Grid Off'}</span>
+                </button>
+              </div>
             )}
 
             {/* Empty State */}
@@ -582,13 +701,14 @@ export default function App() {
                     {Array.from({ length: cols * rows }).map((_, i) => {
                       const r = Math.floor(i / cols);
                       const c = i % cols;
-                      const isSel = selectedTile?.index === i;
+                      const isSel = selected.has(i);
                       const xr = tileRect(activeImage.width, cols, c, overlapPx);
                       const yr = tileRect(activeImage.height, rows, r, overlapPx);
                       return (
                         <div
                           key={i}
-                          onClick={() => setSelectedTile({ index: i, row: r, col: c })}
+                          onClick={(e) => handleTileClick(e, i)}
+                          title={`Tile #${i} — click: select • Ctrl/Cmd+click: multi • Shift+click: range`}
                           style={{
                             left: `${(xr.off / activeImage.width) * 100}%`,
                             top: `${(yr.off / activeImage.height) * 100}%`,
@@ -604,6 +724,11 @@ export default function App() {
                           <span className="absolute top-1 left-1 text-[9px] font-mono px-1 py-0.2 rounded bg-black/70 text-violet-300 font-bold backdrop-blur">
                             #{i}
                           </span>
+                          {isSel && (
+                            <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-violet-500 text-white flex items-center justify-center shadow">
+                              <Check size={11} />
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -612,27 +737,70 @@ export default function App() {
               </div>
             )}
 
-            {/* Tile Inspector Bar */}
-            {selectedTile && activeTab === 'grid' && activeImage && (
+            {/* Tile Inspector Bar (single + multi-select) */}
+            {selected.size > 0 && activeTab === 'grid' && activeImage && (
               <div className="absolute bottom-3 left-3 right-3 sm:left-auto sm:right-3 z-20 bg-zinc-900/95 border border-zinc-700/80 rounded-xl p-2.5 shadow-2xl backdrop-blur flex items-center justify-between gap-3 text-xs">
-                <div>
-                  <div className="font-semibold text-zinc-200">
-                    Tile #{selectedTile.index} (R{selectedTile.row + 1}, C{selectedTile.col + 1})
-                  </div>
-                  <div className="text-[11px] font-mono text-violet-400">
-                    {selectedTileSize ? `${selectedTileSize.w} × ${selectedTileSize.h} px` : '—'}
-                    {selectedTileSize && overlapPx > 0 && (
-                      <span className="text-zinc-500"> (+{overlapPx} → {selectedTileSize.ew} × {selectedTileSize.eh})</span>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() => downloadSingleTile(selectedTile.row, selectedTile.col)}
-                  className="px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium flex items-center gap-1.5 transition-colors"
-                >
-                  <Download size={12} />
-                  <span>Download Tile</span>
-                </button>
+                {selected.size === 1 && selectedTileSize ? (
+                  <>
+                    <div>
+                      <div className="font-semibold text-zinc-200">
+                        Tile #{selectedTileSize.index} (R{selectedTileSize.row + 1}, C{selectedTileSize.col + 1})
+                      </div>
+                      <div className="text-[11px] font-mono text-violet-400">
+                        {`${selectedTileSize.w} × ${selectedTileSize.h} px`}
+                        {overlapPx > 0 && (
+                          <span className="text-zinc-500"> (+{overlapPx} → {selectedTileSize.ew} × {selectedTileSize.eh})</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5 hidden sm:block">Ctrl+click: multi • Shift+click: range</div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={clearSelection}
+                        className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+                        title="Clear selection (Esc)"
+                      >
+                        <X size={13} />
+                      </button>
+                      <button
+                        onClick={() => downloadSingleTile(selectedTileSize.row, selectedTileSize.col)}
+                        className="px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium flex items-center gap-1.5 transition-colors"
+                      >
+                        <Download size={12} />
+                        <span>Download Tile</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <div className="font-semibold text-zinc-200">
+                        {selected.size} tiles selected
+                      </div>
+                      <div className="text-[11px] font-mono text-violet-400">
+                        {[...selected].sort((a, b) => a - b).slice(0, 6).map(n => `#${n}`).join(' ')}
+                        {selected.size > 6 && <span className="text-zinc-500"> +{selected.size - 6} more</span>}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5 hidden sm:block">Ctrl+click: toggle • Shift+click: range • Esc: clear</div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={clearSelection}
+                        className="px-2 py-1.5 rounded-lg hover:bg-zinc-800 text-zinc-300 border border-zinc-700/80 font-medium transition-colors"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        onClick={downloadSelectedTiles}
+                        disabled={isProcessing}
+                        className="px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                      >
+                        <Download size={12} />
+                        <span>{isProcessing ? 'Zipping…' : `Download ${selected.size} (.zip)`}</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

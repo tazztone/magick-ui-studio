@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tileRect, tileSpan } from './tiles';
+import { rangeIndices, tileRect, tileSpan, toggleSelect } from './tiles';
 
 const cases: Array<[number, number]> = [
   [1024, 3],
@@ -79,5 +79,30 @@ describe('tileRect', () => {
   it('clamps absurd overlap to full bleed without crashing', () => {
     expect(tileRect(100, 4, 0, 200)).toEqual({ off: 0, size: 100 });
     expect(tileRect(100, 4, 2, 200)).toEqual({ off: 0, size: 100 });
+  });
+});
+
+describe('toggleSelect', () => {
+  it('adds a missing tile and removes a present one without mutating', () => {
+    const base = new Set([1, 2]);
+    expect([...toggleSelect(base, 3)].sort()).toEqual([1, 2, 3]);
+    expect([...toggleSelect(base, 2)].sort()).toEqual([1]);
+    expect([...base].sort()).toEqual([1, 2]); // input untouched
+  });
+});
+
+describe('rangeIndices', () => {
+  it('returns a single tile when anchor equals target', () => {
+    expect(rangeIndices(5, 5, 3)).toEqual([5]);
+  });
+
+  it('selects the rect between anchor and target in a 3-col grid', () => {
+    // rows 0-1, cols 0-1 => tiles 0,1,3,4 regardless of click order
+    expect(rangeIndices(0, 4, 3)).toEqual([0, 1, 3, 4]);
+    expect(rangeIndices(4, 0, 3)).toEqual([0, 1, 3, 4]);
+  });
+
+  it('selects a full row strip', () => {
+    expect(rangeIndices(3, 5, 3)).toEqual([3, 4, 5]);
   });
 });

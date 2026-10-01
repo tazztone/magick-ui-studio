@@ -7,6 +7,33 @@ export const tileSpan = (total: number, n: number, i: number) => {
   return { off, size: end - off };
 };
 
+// Toggle `i` in a selection set (returns a new Set, never mutates).
+export const toggleSelect = (selected: Set<number>, i: number): Set<number> => {
+  const next = new Set(selected);
+  if (next.has(i)) next.delete(i);
+  else next.add(i);
+  return next;
+};
+
+// Rect-range of tile indices between `anchor` and `target` (inclusive) in a
+// `cols`-wide row-major grid. Used for Shift+click range select.
+export const rangeIndices = (anchor: number, target: number, cols: number): number[] => {
+  const safeCols = Math.max(1, Math.floor(cols) || 1);
+  const ar = Math.floor(anchor / safeCols);
+  const ac = anchor % safeCols;
+  const tr = Math.floor(target / safeCols);
+  const tc = target % safeCols;
+  const r0 = Math.min(ar, tr);
+  const r1 = Math.max(ar, tr);
+  const c0 = Math.min(ac, tc);
+  const c1 = Math.max(ac, tc);
+  const out: number[] = [];
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) out.push(r * safeCols + c);
+  }
+  return out;
+};
+
 // Overlapping tile rect: the base `tileSpan` widened so adjacent tiles share
 // an `overlap`-px strip (split floor/ceil per side to keep integer px),
 // clamped to [0, total]. Edge tiles extend only inward. `overlap <= 0`
