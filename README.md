@@ -81,6 +81,12 @@ canvas 2D contexts, `URL.createObjectURL`, and clipboard access; export
 tests use the real `JSZip` and assert archive names, toasts, and download
 filenames.
 
+End-to-end smoke tests (`e2e/smoke.spec.ts`, 5 specs) drive the real
+production build in the installed Google Chrome: boot, sample load with
+tile overlay, single-tile download (filename + bytes), clipboard copy
+toast, and a two-file batch export whose zip is opened with `JSZip` and
+checked for all 18 tile entries.
+
 ## Deployment
 
 ### Vercel (recommended, 1-click)
@@ -121,6 +127,7 @@ npm run deploy   # builds (predeploy) and pushes dist/ to gh-pages
 | `npm run build`  | `tsc -b` type-check + Vite production build |
 | `npm test`       | Vitest unit + component tests (fast, no coverage) |
 | `npm run test:coverage` | Same suite with V8 coverage; fails under 90% lines/functions/branches |
+| `npm run test:e2e`  | Playwright smoke tests on system Chrome (no browser download needed) |
 | `npm run lint`     | oxlint (React + TS rules)                     |
 | `npm run preview`| Serve `dist/` locally                     |
 | `npm run deploy` | Publish `dist/` to GitHub Pages           |

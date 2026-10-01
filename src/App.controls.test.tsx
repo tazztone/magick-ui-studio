@@ -162,6 +162,10 @@ describe('cli snippet', () => {
     vi.useFakeTimers();
     try {
       fireEvent.click(screen.getByText('Copy'));
+      // flush the async copy before asserting (findBy polling needs real timers)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
       expect(screen.getByText('Command copied to clipboard')).toBeInTheDocument();
       expect(screen.getByText('Copied')).toBeInTheDocument();
       await act(async () => {
@@ -181,7 +185,7 @@ describe('cli snippet', () => {
       throw new Error('denied');
     });
     fireEvent.click(screen.getByText('Copy'));
-    expect(screen.getByText('Failed to copy')).toBeInTheDocument();
+    expect(await screen.findByText('Failed to copy')).toBeInTheDocument();
   });
 });
 

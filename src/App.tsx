@@ -7,6 +7,7 @@ import { buildGeneratedCommand, resolveExportDims } from './lib/export-command';
 import { buildPreviewStyle, drawTransformedImage } from './lib/canvas';
 import { batchArchiveName, processedFileName, selectedZipName, tileFileName } from './lib/naming';
 import { createImageRecord, type ImageRecord } from './lib/images';
+import { copyText } from './lib/clipboard';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Upload, Grid, Terminal, Download, Copy, 
@@ -87,10 +88,16 @@ export default function App() {
         }
       : null;
 
-  useEffect(() => {
+  // Reset the tile selection whenever the grid identity changes. Done during
+  // render (the documented pattern for adjusting state from previous renders)
+  // so there is no one-frame flicker of a stale selection, and no effect.
+  const gridKey = `${activeIndex}:${cols}x${rows}`;
+  const [prevGridKey, setPrevGridKey] = useState(gridKey);
+  if (prevGridKey !== gridKey) {
+    setPrevGridKey(gridKey);
     setSelected(new Set());
     setAnchorIndex(null);
-  }, [activeIndex, cols, rows]);
+  }
 
   // Esc clears the tile selection when the grid tab is active.
   useEffect(() => {
@@ -254,18 +261,12 @@ export default function App() {
     shellType,
   }), [images, activeImage, activeTab, cols, rows, overlapPx, resizePercent, rotation, grayscale, invert, outputFormat, quality, shellType]);
 
-  const copyCliCode = () => {
-    try {
-      const el = document.createElement('textarea');
-      el.value = generatedCommand;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand('copy');
-      document.body.removeChild(el);
+  const copyCliCode = async () => {
+    if (await copyText(generatedCommand)) {
       setCopiedNotification(true);
       setTimeout(() => setCopiedNotification(false), 2000);
       showToast('Command copied to clipboard');
-    } catch {
+    } else {
       showToast('Failed to copy');
     }
   };
@@ -709,7 +710,7 @@ export default function App() {
                         <X size={13} />
                       </button>
                       <button
-                        onClick={() => downloadSingleTile(selectedTileSize.row, selectedTileSize.col)}
+                        onClick={downloadSelectedTiles}
                         className="px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium flex items-center gap-1.5 transition-colors"
                       >
                         <Download size={12} />
