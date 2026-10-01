@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tileSpan } from './tiles';
+import { tileRect, tileSpan } from './tiles';
 
 const cases: Array<[number, number]> = [
   [1024, 3],
@@ -36,5 +36,48 @@ describe('tileSpan', () => {
   it('splits evenly divisible sizes exactly', () => {
     expect(tileSpan(1024, 4, 0)).toEqual({ off: 0, size: 256 });
     expect(tileSpan(1024, 4, 3)).toEqual({ off: 768, size: 256 });
+  });
+});
+
+describe('tileRect', () => {
+  it('matches tileSpan when overlap is 0 or negative', () => {
+    for (const [total, n] of [[1024, 3], [1025, 3], [100, 7], [2, 4]] as Array<[number, number]>) {
+      for (let i = 0; i < n; i++) {
+        expect(tileRect(total, n, i, 0)).toEqual(tileSpan(total, n, i));
+        expect(tileRect(total, n, i, -5)).toEqual(tileSpan(total, n, i));
+      }
+    }
+  });
+
+  it('shares an overlap strip between neighbors (even overlap)', () => {
+    // 1000px / 4 tiles, overlap 10 -> interior tiles grow 5px per side
+    expect(tileRect(1000, 4, 0, 10)).toEqual({ off: 0, size: 255 });
+    expect(tileRect(1000, 4, 1, 10)).toEqual({ off: 245, size: 260 });
+    expect(tileRect(1000, 4, 3, 10)).toEqual({ off: 745, size: 255 });
+  });
+
+  it('splits odd overlap floor/ceil to keep integer px', () => {
+    // overlap 7 -> 3px before, 4px after
+    expect(tileRect(1000, 4, 1, 7)).toEqual({ off: 247, size: 257 });
+  });
+
+  it('always covers its base span and stays in bounds', () => {
+    for (const [total, n, o] of [[1025, 3, 10], [100, 7, 8], [1920, 5, 64], [7, 4, 3]] as Array<[number, number, number]>) {
+      for (let i = 0; i < n; i++) {
+        const base = tileSpan(total, n, i);
+        const r = tileRect(total, n, i, o);
+        expect(r.off).toBeLessThanOrEqual(base.off);
+        expect(r.off + r.size).toBeGreaterThanOrEqual(base.off + base.size);
+        expect(r.off).toBeGreaterThanOrEqual(0);
+        expect(r.off + r.size).toBeLessThanOrEqual(total);
+        expect(Number.isInteger(r.off)).toBe(true);
+        expect(Number.isInteger(r.size)).toBe(true);
+      }
+    }
+  });
+
+  it('clamps absurd overlap to full bleed without crashing', () => {
+    expect(tileRect(100, 4, 0, 200)).toEqual({ off: 0, size: 100 });
+    expect(tileRect(100, 4, 2, 200)).toEqual({ off: 0, size: 100 });
   });
 });
