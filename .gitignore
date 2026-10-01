@@ -144,3 +144,4 @@ vite.config.ts.timestamp-*
 
 # Project-local npm cache (sandbox workaround)
 .npm-cache/
+.tmp-vitest/
